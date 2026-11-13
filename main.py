@@ -6,7 +6,6 @@ import sys
 import threading
 import time
 import traceback
-from concurrent.futures.thread import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from queue import PriorityQueue
 from threading import RLock
@@ -68,7 +67,7 @@ def parse_args():
         "-s", "--speed", type=float, default=1.0, help="视频播放倍速 (默认1, 最大2)"
     )
     parser.add_argument(
-        "-j", "--jobs", type=int, default=4, help="同时进行的章节数 (默认4, 如果一个章节有多个任务点，不会限制同时处理任务点的数量)"
+        "-j", "--jobs", type=int, default=1, help="同时进行的章节数 (已固定为1: 一次只观看一个视频，即使填写更大的值也会被强制改成1)"
     )
 
     parser.add_argument(
@@ -290,8 +289,9 @@ class JobProcessor:
     STOP_POINT = {"__stop__": True}
 
     def __init__(self, chaoxing: Chaoxing, course: dict[str, Any], tasks: list[ChapterTask], config: dict[str, Any]):
-        if "jobs" not in config or not config["jobs"]:
-            config["jobs"] = 4
+        # 一次只观看一个视频: 章节严格串行, 不允许同时处理多个章节
+        # 即使配置文件或命令行给出了更大的 jobs, 这里也强制改成 1
+        config["jobs"] = 1
         
         self.chaoxing = chaoxing
         self.course = course
@@ -427,11 +427,10 @@ def process_chapter(chaoxing: Chaoxing, course:dict[str, Any], point:dict[str, A
     if not jobs:
         pass
 
-    # TODO: 个别章节很恶心，多到5个点，可以并行处理，将来会让不同课程不同章节的所有任务点共享一个队列，从而实现全局并行
+    # 同一章节内的任务点也严格串行: 一次只观看一个视频
     job_results:list[StudyResult]=[]
-    with ThreadPoolExecutor(max_workers=5) as executor:
-        for result in executor.map(lambda job: process_job(chaoxing, course, job, job_info, speed), jobs):
-            job_results.append(result)
+    for job in jobs:
+        job_results.append(process_job(chaoxing, course, job, job_info, speed))
     
     for result in job_results:
         if result.is_failure():
@@ -522,6 +521,13 @@ def main():
         # 强制播放按照配置文件调节
         common_config["speed"] = min(2.0, max(1.0, common_config.get("speed", 1.0)))
         common_config["notopen_action"] = common_config.get("notopen_action", "retry")
+
+        # 强制单线程观看: 一次只处理一个章节, 保证同一时间只有一个视频在播
+        if common_config.get("jobs", 1) != 1:
+            logger.info(
+                f"检测到配置 jobs={common_config.get('jobs')}, 已强制改为 1 (一次只观看一个视频)"
+            )
+        common_config["jobs"] = 1
         
         # 初始化超星实例
         chaoxing = init_chaoxing(common_config, tiku_config)
@@ -569,3 +575,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
